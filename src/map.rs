@@ -13,6 +13,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::borrow::Borrow;
 use core::fmt::{self, Debug};
+#[cfg(feature = "preserve_order")]
+use core::hash::BuildHasherDefault;
 use core::hash::{Hash, Hasher};
 use core::iter::FusedIterator;
 #[cfg(feature = "preserve_order")]
@@ -25,6 +27,37 @@ use alloc::collections::{btree_map, BTreeMap};
 #[cfg(feature = "preserve_order")]
 use indexmap::IndexMap;
 
+// Under `no_std`, `indexmap` takes its `BuildHasher` from the caller. JSON
+// inputs carry byte and node bounds from their callers, so this map keeps
+// insertion order through a small deterministic FNV-1a `Hasher` and leaves
+// the `std` features of `indexmap` and `serde_json` off.
+#[cfg(feature = "preserve_order")]
+struct Fnv1a(u64);
+
+#[cfg(feature = "preserve_order")]
+impl Default for Fnv1a {
+    #[inline]
+    fn default() -> Self {
+        Fnv1a(0xcbf29ce484222325)
+    }
+}
+
+#[cfg(feature = "preserve_order")]
+impl Hasher for Fnv1a {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 ^= u64::from(*byte);
+            self.0 = self.0.wrapping_mul(0x100000001b3);
+        }
+    }
+}
+
 /// Represents a JSON key/value type.
 pub struct Map<K, V> {
     map: MapImpl<K, V>,
@@ -33,14 +66,17 @@ pub struct Map<K, V> {
 #[cfg(not(feature = "preserve_order"))]
 type MapImpl<K, V> = BTreeMap<K, V>;
 #[cfg(feature = "preserve_order")]
-type MapImpl<K, V> = IndexMap<K, V>;
+type MapImpl<K, V> = IndexMap<K, V, BuildHasherDefault<Fnv1a>>;
 
 impl Map<String, Value> {
     /// Makes a new empty Map.
     #[inline]
     pub fn new() -> Self {
         Map {
+            #[cfg(not(feature = "preserve_order"))]
             map: MapImpl::new(),
+            #[cfg(feature = "preserve_order")]
+            map: MapImpl::with_hasher(Default::default()),
         }
     }
 
@@ -55,7 +91,7 @@ impl Map<String, Value> {
                 BTreeMap::new()
             },
             #[cfg(feature = "preserve_order")]
-            map: IndexMap::with_capacity(capacity),
+            map: IndexMap::with_capacity_and_hasher(capacity, Default::default()),
         }
     }
 
@@ -387,7 +423,10 @@ impl Default for Map<String, Value> {
     #[inline]
     fn default() -> Self {
         Map {
+            #[cfg(not(feature = "preserve_order"))]
             map: MapImpl::new(),
+            #[cfg(feature = "preserve_order")]
+            map: MapImpl::with_hasher(Default::default()),
         }
     }
 }
